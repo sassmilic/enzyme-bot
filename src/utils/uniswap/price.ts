@@ -69,7 +69,7 @@ export async function uniswapV3Price({
     }
 
     const price =
-      Number(route.quote.toExact()) / Number(utils.formatUnits(BigNumber.from(quantity).toString(), tokenA.decimals));
+      Number(route.quote.toExact()) / Number(utils.formatUnits(quantity.toString(), tokenA.decimals));
 
     const bestRoute = route.trade.routes[0].path.map((item) => getSymbol(environment, item)).join(' > ') || '';
 

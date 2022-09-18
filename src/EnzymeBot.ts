@@ -22,6 +22,7 @@ import { getWallet } from './utils/getWallet';
 import { loadEnv } from './utils/loadEnv';
 import { VaultDetailsQuery } from './utils/subgraph/subgraph';
 import { uniswapV3Price, UniswapPrice } from './utils/uniswap/price';
+import { Moon } from "lunarphase-js";
 
 export class EnzymeBot {
   public static async create(network: 'POLYGON' | 'ETHEREUM') {
@@ -62,21 +63,15 @@ export class EnzymeBot {
     public readonly subgraphEndpoint: string
   ) {}
 
-  public async chooseRandomAsset() {
-    const release = this.vaultDetails.vault?.release.id;
-
-    if (!release) {
-      return undefined;
-    }
-
-    if (!this.assets || this.assets.length === 0) {
-      return undefined;
-    }
-
-    const length = this.assets.length;
-    const random = Math.floor(Math.random() * length);
-
-    return this.assets[random];
+  public async getAssetFromID(ID: string) {
+    const holdings = this.vaultDetails.vault?.trackedAssets;
+    const asset = holdings.reduce((carry, current) => {
+      if (current.id == ID) {
+        return current;
+      }
+      return carry;
+    }, holdings[0]);
+    return asset;
   }
 
   public async swapTokens(uniswapPrice: UniswapPrice, outgoingAssetAmount: BigNumber) {
@@ -99,9 +94,11 @@ export class EnzymeBot {
       return;
     }
 
+    const priceWithSlippage = uniswapPrice.amount?.mul(Math.floor((1 - 0.05) * 10000)).div(10000) ?? 0;
+
     const takeOrderArgs = uniswapV3TakeOrderArgs({
-      minIncomingAssetAmount: uniswapPrice.amount?.mul(Math.floor((1 - 0.05) * 10000)).div(10000) ?? 0,
-      outgoingAssetAmount,
+      minIncomingAssetAmount: priceWithSlippage.toString(),
+      outgoingAssetAmount: outgoingAssetAmount.toString(),
       pathAddresses: uniswapPrice.path.map((item) => item.address),
       pathFees: uniswapPrice.pools.map((pool) => BigNumber.from(pool.fee)),
     });
@@ -116,78 +113,59 @@ export class EnzymeBot {
     return contract.callOnExtension.args(integrationManager, IntegrationManagerActionId.CallOnIntegration, callArgs);
   }
 
-  public async tradeAlgorithmically() {
-    // get a random token
-    const randomToken = await this.chooseRandomAsset();
+  public async tradeAlgorithmically(frequency: Number) {
 
-    // if no random token return, or if the random token is a derivative that's not available on Uniswap
-    if (!randomToken) {
-      console.log("The Miner's Delight did not find an appropriate token to buy.");
-      return;
+    const wethID = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2';
+    const usdcID = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+    const tradeSizePercent = 0.5;
+
+    // Check the moon phase
+    const age = Moon.lunarAge();
+    console.log(`The current lunar age is ${age}`);
+
+    const newMoon = age < 1 || age > 28;
+    const fullMoon = 13 < age && age < 15;
+
+    // TODO
+    //if (!newMoon || !fullMoon) {return;}
+
+    let incomingTokenID;
+    let outgoingVaultAsset;
+    let amount; 
+
+    if (newMoon) {
+      // sell `tradeSizePercent` WETH for USDC
+      incomingTokenID = await this.getAssetFromID(usdcID);
+      outgoingVaultAsset = await this.getAssetFromID(wethID);
+      const wethAmount = await getTokenBalance(this.vaultAddress, wethID, this.network);
+      amount = wethAmount * tradeSizePercent; 
+    } else if (fullMoon) {
+      // buy WETH with `tradeSizePercent` USDC
+      incomingTokenID = await this.getAssetFromID(wethID);
+      outgoingVaultAsset = this.getAssetFromID(usdcID);
+      const usdcAmount = await getTokenBalance(this.vaultAddress, usdcID, this.network);
+      amount = usdcAmount * tradeSizePercent; 
+    } else {
+      incomingTokenID = await this.getAssetFromID(wethID);
+      outgoingVaultAsset = await this.getAssetFromID(usdcID);
+      const usdcAmount = await getTokenBalance(this.vaultAddress, usdcID, this.network);
+      amount = Math.floor(usdcAmount * 0.01); 
     }
-
-    // get your fund's holdings
-    const holdings = this.vaultDetails.vault?.trackedAssets;
-
-    // if you have no holdings, return
-    if (!holdings || holdings.length === 0) {
-      console.log('Your fund has no assets.');
-      return;
-    }
-
-    // if your vault already holds the random token, return
-    if (holdings.map((holding) => holding.id.toLowerCase()).includes(randomToken.id.toLowerCase())) {
-      console.log("You already hold the asset that the Miner's Delight randomly selected.");
-      return;
-    }
-
-    // get the amount of each holding
-    const holdingAmounts = await Promise.all(
-      holdings.map((holding) => getTokenBalance(this.vaultAddress, holding.id, this.network))
-    );
-
-    // combine holding token data with amounts
-    const holdingsWithAmounts = holdings.map((holding, index) => {
-      return { ...holding, amount: holdingAmounts[index] };
-    });
-
-    // find the token you will sell by searching for largest token holding
-    // this does NOT look at the actual value of the holdings (largest USD value), but instead largest token amount
-    const biggestPosition = holdingsWithAmounts.reduce((carry, current) => {
-      if (current.amount.gte(carry.amount)) {
-        return current;
-      }
-      return carry;
-    }, holdingsWithAmounts[0]);
-
-    // get the proper Asset object to pass for uniswap price
-    const outgoingVaultAsset = this.assets.filter(
-      (asset) => asset.id.toLowerCase() === biggestPosition.id.toLowerCase()
-    )[0];
-
-    console.log(
-      `The Miner's Delight has chosen. You will trade ${utils.formatUnits(
-        biggestPosition.amount,
-        outgoingVaultAsset.decimals
-      )} ${outgoingVaultAsset.name} (${outgoingVaultAsset.symbol}) for as many ${randomToken.name} (${
-        randomToken.symbol
-      }) as you can get.`
-    );
 
     const uniswapPrice = await uniswapV3Price({
       environment: this.environment,
-      incoming: randomToken,
+      incoming: incomingTokenID,
       outgoing: outgoingVaultAsset,
-      quantity: biggestPosition.amount,
+      quantity: amount.toString(),
       provider: this.provider,
     });
-
+    
     if (uniswapPrice.status === 'ERROR' || !uniswapPrice.amount || !uniswapPrice.path || !uniswapPrice.pools) {
       console.log('No route for uniswap price found');
       throw new Error('No route for uniswap price found');
     }
 
     // call the transaction
-    return this.swapTokens(uniswapPrice, biggestPosition.amount);
+    return this.swapTokens(uniswapPrice, amount);
   }
 }
