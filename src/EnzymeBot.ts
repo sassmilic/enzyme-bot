@@ -126,8 +126,7 @@ export class EnzymeBot {
     const newMoon = age < 1 || age > 28;
     const fullMoon = 13 < age && age < 15;
 
-    // TODO
-    //if (!newMoon || !fullMoon) {return;}
+    if (!newMoon || !fullMoon) {return;}
 
     let incomingTokenID;
     let outgoingVaultAsset;
@@ -145,12 +144,7 @@ export class EnzymeBot {
       outgoingVaultAsset = this.getAssetFromID(usdcID);
       const usdcAmount = await getTokenBalance(this.vaultAddress, usdcID, this.network);
       amount = usdcAmount * tradeSizePercent; 
-    } else {
-      incomingTokenID = await this.getAssetFromID(wethID);
-      outgoingVaultAsset = await this.getAssetFromID(usdcID);
-      const usdcAmount = await getTokenBalance(this.vaultAddress, usdcID, this.network);
-      amount = Math.floor(usdcAmount * 0.01); 
-    }
+    } 
 
     const uniswapPrice = await uniswapV3Price({
       environment: this.environment,
